@@ -1,463 +1,379 @@
 #!/usr/bin/env python3
-"""BlockCraft Classic (fan game)
-A small Minecraft Classic-inspired sandbox written in Python.
+"""Sky Slingers (fan game)
+Original physics-puzzle game inspired by slingshot bird games.
 
 Controls:
-- WASD: move
-- Mouse: look
-- LMB: remove block
-- RMB: place block
-- 1..7: choose block type
-- Space: jump
-- Esc: release mouse / quit
+- Hold LMB on the bird to drag.
+- Release LMB to launch.
+- R to restart level.
+- N to next level (when all targets are defeated).
+- ESC to quit.
 """
 
 from __future__ import annotations
 
+import array
 import math
-import os
 import random
-import struct
-import wave
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pygame
-from OpenGL.GL import (
-    GL_COLOR_BUFFER_BIT,
-    GL_CULL_FACE,
-    GL_DEPTH_BUFFER_BIT,
-    GL_DEPTH_TEST,
-    GL_LINEAR,
-    GL_MODELVIEW,
-    GL_NEAREST,
-    GL_PROJECTION,
-    GL_QUADS,
-    GL_RGBA,
-    GL_TEXTURE_2D,
-    GL_TEXTURE_MAG_FILTER,
-    GL_TEXTURE_MIN_FILTER,
-    GL_UNSIGNED_BYTE,
-    glBegin,
-    glBindTexture,
-    glClear,
-    glColor3f,
-    glDisable,
-    glEnable,
-    glEnd,
-    glGenTextures,
-    glLoadIdentity,
-    glRotatef,
-    glMatrixMode,
-    glNormal3f,
-    glTexCoord2f,
-    glTexImage2D,
-    glTexParameteri,
-    glDrawPixels,
-    glRasterPos2f,
-    glTranslatef,
-    glVertex3f,
-)
-from OpenGL.GLU import gluPerspective
 
-Vec3i = Tuple[int, int, int]
-
-WORLD_W = 64
-WORLD_D = 64
-WORLD_H = 32
-
-BLOCK_AIR = 0
-BLOCK_GRASS = 1
-BLOCK_DIRT = 2
-BLOCK_STONE = 3
-BLOCK_WOOD = 4
-BLOCK_LEAVES = 5
-BLOCK_SAND = 6
-BLOCK_BRICK = 7
-
-BLOCK_COLORS = {
-    BLOCK_GRASS: (92, 161, 71),
-    BLOCK_DIRT: (124, 84, 52),
-    BLOCK_STONE: (127, 127, 133),
-    BLOCK_WOOD: (152, 118, 74),
-    BLOCK_LEAVES: (72, 136, 64),
-    BLOCK_SAND: (196, 182, 122),
-    BLOCK_BRICK: (168, 70, 60),
-}
-
-FACE_VERTS = {
-    "top": ((0, 1, 0), (1, 1, 0), (1, 1, 1), (0, 1, 1)),
-    "bottom": ((0, 0, 1), (1, 0, 1), (1, 0, 0), (0, 0, 0)),
-    "left": ((0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)),
-    "right": ((1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 1, 1)),
-    "front": ((1, 0, 0), (0, 0, 0), (0, 1, 0), (1, 1, 0)),
-    "back": ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)),
-}
-
-FACE_NORMALS = {
-    "top": (0, 1, 0),
-    "bottom": (0, -1, 0),
-    "left": (-1, 0, 0),
-    "right": (1, 0, 0),
-    "front": (0, 0, -1),
-    "back": (0, 0, 1),
-}
-
-FACE_NEIGHBOR = {
-    "top": (0, 1, 0),
-    "bottom": (0, -1, 0),
-    "left": (-1, 0, 0),
-    "right": (1, 0, 0),
-    "front": (0, 0, -1),
-    "back": (0, 0, 1),
-}
+WIDTH, HEIGHT = 1280, 720
+FPS = 60
+GRAVITY = 1400.0
+GROUND_Y = 630
+SLING_X = 210
+SLING_Y = 520
 
 
 @dataclass
-class Player:
-    x: float = WORLD_W / 2
-    y: float = 20.0
-    z: float = WORLD_D / 2
-    yaw: float = 0.0
-    pitch: float = 0.0
+class Body:
+    x: float
+    y: float
+    w: float
+    h: float
+    vx: float = 0.0
     vy: float = 0.0
-    speed: float = 7.0
-    on_ground: bool = False
+    mass: float = 1.0
+    hp: float = 100.0
+    is_target: bool = False
+    color: Tuple[int, int, int] = (180, 180, 180)
 
-
-class World:
-    def __init__(self, seed: int = 2009):
-        self.seed = seed
-        self.rng = random.Random(seed)
-        self.blocks: Dict[Vec3i, int] = {}
-        self._generate()
-
-    def _height(self, x: int, z: int) -> int:
-        value = (
-            11
-            + 4 * math.sin(x * 0.17)
-            + 3 * math.cos(z * 0.21)
-            + 2 * math.sin((x + z) * 0.11)
-        )
-        return max(4, min(WORLD_H - 4, int(value)))
-
-    def _generate(self) -> None:
-        waterline = 9
-        for x in range(WORLD_W):
-            for z in range(WORLD_D):
-                h = self._height(x, z)
-                top_block = BLOCK_GRASS if h > waterline else BLOCK_SAND
-                for y in range(h):
-                    if y == h - 1:
-                        block = top_block
-                    elif y > h - 5:
-                        block = BLOCK_DIRT if h > waterline else BLOCK_SAND
-                    else:
-                        block = BLOCK_STONE
-                    self.blocks[(x, y, z)] = block
-
-                if h > waterline + 2 and self.rng.random() < 0.06:
-                    self._spawn_tree(x, h, z)
-
-    def _spawn_tree(self, x: int, y: int, z: int) -> None:
-        if x < 2 or z < 2 or x > WORLD_W - 3 or z > WORLD_D - 3:
-            return
-        trunk_h = self.rng.randint(3, 5)
-        for i in range(trunk_h):
-            self.blocks[(x, y + i, z)] = BLOCK_WOOD
-        top = y + trunk_h
-        for lx in range(x - 2, x + 3):
-            for lz in range(z - 2, z + 3):
-                for ly in range(top - 2, top + 2):
-                    if (lx - x) ** 2 + (lz - z) ** 2 + (ly - top) ** 2 <= 7:
-                        self.blocks[(lx, ly, lz)] = BLOCK_LEAVES
-
-    def get(self, pos: Vec3i) -> int:
-        return self.blocks.get(pos, BLOCK_AIR)
-
-    def set(self, pos: Vec3i, block: int) -> None:
-        x, y, z = pos
-        if x < 0 or z < 0 or y < 0 or x >= WORLD_W or z >= WORLD_D or y >= WORLD_H:
-            return
-        if block == BLOCK_AIR:
-            self.blocks.pop(pos, None)
-        else:
-            self.blocks[pos] = block
-
-    def solid(self, x: float, y: float, z: float) -> bool:
-        return self.get((int(math.floor(x)), int(math.floor(y)), int(math.floor(z)))) != BLOCK_AIR
+    @property
+    def rect(self) -> pygame.Rect:
+        return pygame.Rect(int(self.x - self.w / 2), int(self.y - self.h / 2), int(self.w), int(self.h))
 
 
 class AudioBank:
-    def __init__(self, folder: str = "assets/sfx"):
-        self.folder = folder
-        os.makedirs(folder, exist_ok=True)
-        self.break_path = os.path.join(folder, "break.wav")
-        self.place_path = os.path.join(folder, "place.wav")
-        self._ensure()
-        self.break_sound = pygame.mixer.Sound(self.break_path)
-        self.place_sound = pygame.mixer.Sound(self.place_path)
+    def __init__(self):
+        self.rate = 22050
+        self.launch = self._tone(320, 0.12, "triangle", 0.35)
+        self.hit = self._tone(160, 0.10, "noise", 0.50)
+        self.breaking = self._tone(90, 0.15, "square", 0.35)
+        self.win = self._chord((392, 494, 587), 0.22)
 
-    def _ensure(self) -> None:
-        if not os.path.exists(self.break_path):
-            self._write_tone(self.break_path, 180, 0.1, "noise")
-        if not os.path.exists(self.place_path):
-            self._write_tone(self.place_path, 320, 0.08, "square")
-
-    def _write_tone(self, path: str, freq: float, duration: float, kind: str) -> None:
-        sample_rate = 22050
-        total = int(sample_rate * duration)
-        rnd = random.Random(99)
-        data = bytearray()
-
-        for i in range(total):
-            t = i / sample_rate
-            env = max(0.0, 1.0 - (i / total) * 1.15)
-            if kind == "square":
-                base = 1.0 if math.sin(2 * math.pi * freq * t) >= 0 else -1.0
+    def _tone(self, freq: float, duration: float, kind: str, volume: float) -> pygame.mixer.Sound:
+        n = int(self.rate * duration)
+        data = array.array("h")
+        rnd = random.Random(7)
+        for i in range(n):
+            t = i / self.rate
+            env = max(0.0, 1.0 - i / n)
+            if kind == "triangle":
+                p = (t * freq) % 1.0
+                v = 4 * abs(p - 0.5) - 1
+            elif kind == "square":
+                v = 1.0 if math.sin(2 * math.pi * freq * t) > 0 else -1.0
             elif kind == "noise":
-                base = rnd.uniform(-1, 1) * (0.6 + 0.4 * math.sin(2 * math.pi * 36 * t))
+                v = rnd.uniform(-1.0, 1.0)
             else:
-                base = math.sin(2 * math.pi * freq * t)
+                v = math.sin(2 * math.pi * freq * t)
+            data.append(int(32767 * v * env * volume))
+        return pygame.mixer.Sound(buffer=data.tobytes())
 
-            v = int(32767 * base * env * 0.35)
-            data.extend(struct.pack("<h", v))
-
-        with wave.open(path, "wb") as f:
-            f.setnchannels(1)
-            f.setsampwidth(2)
-            f.setframerate(sample_rate)
-            f.writeframes(bytes(data))
+    def _chord(self, freqs: Tuple[float, ...], duration: float) -> pygame.mixer.Sound:
+        n = int(self.rate * duration)
+        data = array.array("h")
+        for i in range(n):
+            t = i / self.rate
+            env = max(0.0, 1.0 - i / n)
+            v = sum(math.sin(2 * math.pi * f * t) for f in freqs) / len(freqs)
+            data.append(int(32767 * v * env * 0.30))
+        return pygame.mixer.Sound(buffer=data.tobytes())
 
 
 class Game:
-    def __init__(self):
+    def __init__(self) -> None:
         pygame.init()
         pygame.mixer.init(frequency=22050, size=-16, channels=1)
-        pygame.display.set_mode((1280, 720), pygame.OPENGL | pygame.DOUBLEBUF)
-        pygame.display.set_caption("BlockCraft Classic 2009 (Fan)")
-
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_CULL_FACE)
-        glEnable(GL_TEXTURE_2D)
-
-        glMatrixMode(GL_PROJECTION)
-        gluPerspective(75, 1280 / 720, 0.05, 200.0)
-        glMatrixMode(GL_MODELVIEW)
-
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Sky Slingers — original fan game")
         self.clock = pygame.time.Clock()
-        self.world = World()
-        self.player = Player()
-        self.selected_block = BLOCK_GRASS
-        self.font = pygame.font.SysFont("consolas", 20)
-        self.sfx = AudioBank()
+        self.font = pygame.font.SysFont("consolas", 24)
+        self.big = pygame.font.SysFont("consolas", 52, bold=True)
 
-        self.textures = self._create_textures()
+        self.audio = AudioBank()
+
+        self.level_idx = 0
+        self.levels = [self._level_1, self._level_2, self._level_3]
+
+        self.blocks: List[Body] = []
+        self.targets: List[Body] = []
+        self.projectile: Optional[Body] = None
+        self.trail: List[Tuple[float, float]] = []
+
+        self.dragging = False
+        self.shot_fired = False
+        self.max_pull = 130.0
         self.running = True
 
-        pygame.event.set_grab(True)
-        pygame.mouse.set_visible(False)
+        self.reset_level()
 
-    def _create_textures(self) -> Dict[int, int]:
-        textures: Dict[int, int] = {}
-        for block, color in BLOCK_COLORS.items():
-            surface = pygame.Surface((16, 16))
-            r, g, b = color
-            for y in range(16):
-                for x in range(16):
-                    noise = ((x * 13 + y * 19 + block * 7) % 23) - 11
-                    px = (
-                        max(0, min(255, r + noise)),
-                        max(0, min(255, g + noise)),
-                        max(0, min(255, b + noise)),
-                    )
-                    surface.set_at((x, y), px)
+    def _spawn_projectile(self) -> Body:
+        return Body(SLING_X, SLING_Y, 34, 34, mass=0.8, hp=999, color=(210, 75, 62))
 
-            if block == BLOCK_BRICK:
-                for y in range(0, 16, 4):
-                    pygame.draw.line(surface, (80, 35, 30), (0, y), (15, y))
-                for y in range(2, 16, 4):
-                    pygame.draw.line(surface, (80, 35, 30), (8, y), (8, y + 2))
+    def _make_block(self, x: float, y: float, w: float, h: float, hp: float = 80) -> Body:
+        return Body(x, y, w, h, mass=max(0.5, w * h / 2800), hp=hp, color=(182, 145, 96))
 
-            tex = glGenTextures(1)
-            glBindTexture(GL_TEXTURE_2D, tex)
-            data = pygame.image.tostring(surface, "RGBA", True)
-            glTexImage2D(
-                GL_TEXTURE_2D,
-                0,
-                GL_RGBA,
-                16,
-                16,
-                0,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                data,
-            )
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-            textures[block] = tex
-        return textures
+    def _make_target(self, x: float, y: float) -> Body:
+        return Body(x, y, 36, 36, mass=0.9, hp=55, is_target=True, color=(90, 188, 90))
 
-    def _raycast_block(self, max_dist: float = 8.0) -> Tuple[Optional[Vec3i], Optional[Vec3i]]:
-        px, py, pz = self.player.x, self.player.y + 1.6, self.player.z
-        pitch = math.radians(self.player.pitch)
-        yaw = math.radians(self.player.yaw)
-        dx = math.cos(pitch) * math.sin(yaw)
-        dy = -math.sin(pitch)
-        dz = -math.cos(pitch) * math.cos(yaw)
+    def _level_1(self) -> None:
+        self.blocks += [
+            self._make_block(920, 595, 170, 22),
+            self._make_block(890, 548, 24, 72),
+            self._make_block(950, 548, 24, 72),
+            self._make_block(920, 502, 100, 20),
+        ]
+        self.targets += [self._make_target(920, 560)]
 
-        last_air: Optional[Vec3i] = None
-        step = 0.05
-        t = 0.0
-        while t <= max_dist:
-            cx = px + dx * t
-            cy = py + dy * t
-            cz = pz + dz * t
-            cell = (int(math.floor(cx)), int(math.floor(cy)), int(math.floor(cz)))
-            if self.world.get(cell) != BLOCK_AIR:
-                return cell, last_air
-            last_air = cell
-            t += step
-        return None, last_air
+    def _level_2(self) -> None:
+        self.blocks += [
+            self._make_block(900, 595, 190, 22),
+            self._make_block(980, 595, 190, 22),
+            self._make_block(860, 548, 20, 72),
+            self._make_block(940, 548, 20, 72),
+            self._make_block(1020, 548, 20, 72),
+            self._make_block(900, 503, 100, 18),
+            self._make_block(980, 503, 100, 18),
+        ]
+        self.targets += [self._make_target(900, 565), self._make_target(980, 565)]
 
-    def _collides(self, x: float, y: float, z: float) -> bool:
-        radius = 0.28
-        for ox in (-radius, radius):
-            for oz in (-radius, radius):
-                for oy in (0.0, 0.9, 1.7):
-                    if self.world.solid(x + ox, y + oy, z + oz):
-                        return True
-        return False
+    def _level_3(self) -> None:
+        self.blocks += [
+            self._make_block(880, 598, 260, 18),
+            self._make_block(1020, 598, 260, 18),
+            self._make_block(840, 552, 22, 82),
+            self._make_block(920, 552, 22, 82),
+            self._make_block(980, 552, 22, 82),
+            self._make_block(1060, 552, 22, 82),
+            self._make_block(880, 502, 112, 18),
+            self._make_block(1020, 502, 112, 18),
+            self._make_block(950, 458, 170, 18),
+        ]
+        self.targets += [self._make_target(880, 565), self._make_target(1020, 565), self._make_target(950, 520)]
 
-    def _move(self, dt: float, keys: Iterable[bool]) -> None:
-        k = keys
-        speed = self.player.speed * (1.6 if k[pygame.K_LSHIFT] else 1.0)
-        yaw = math.radians(self.player.yaw)
+    def reset_level(self) -> None:
+        self.blocks.clear()
+        self.targets.clear()
+        self.projectile = self._spawn_projectile()
+        self.trail.clear()
+        self.dragging = False
+        self.shot_fired = False
+        self.levels[self.level_idx]()
 
-        fwdx = math.sin(yaw)
-        fwdz = -math.cos(yaw)
-        rightx = math.sin(yaw + math.pi / 2)
-        rightz = -math.cos(yaw + math.pi / 2)
+    def _aabb_resolve(self, a: Body, b: Body) -> None:
+        ra, rb = a.rect, b.rect
+        if not ra.colliderect(rb):
+            return
 
-        vx = vz = 0.0
-        if k[pygame.K_w]:
-            vx += fwdx
-            vz += fwdz
-        if k[pygame.K_s]:
-            vx -= fwdx
-            vz -= fwdz
-        if k[pygame.K_a]:
-            vx -= rightx
-            vz -= rightz
-        if k[pygame.K_d]:
-            vx += rightx
-            vz += rightz
+        dx = (a.x - b.x)
+        dy = (a.y - b.y)
+        overlap_x = (a.w + b.w) / 2 - abs(dx)
+        overlap_y = (a.h + b.h) / 2 - abs(dy)
 
-        length = math.hypot(vx, vz)
-        if length > 0:
-            vx = vx / length * speed * dt
-            vz = vz / length * speed * dt
-
-        nx, nz = self.player.x + vx, self.player.z + vz
-        if not self._collides(nx, self.player.y, self.player.z):
-            self.player.x = nx
-        if not self._collides(self.player.x, self.player.y, nz):
-            self.player.z = nz
-
-        self.player.vy -= 18.0 * dt
-        ny = self.player.y + self.player.vy * dt
-        if self._collides(self.player.x, ny, self.player.z):
-            if self.player.vy < 0:
-                self.player.on_ground = True
-            self.player.vy = 0
+        if overlap_x < overlap_y:
+            push = overlap_x if dx > 0 else -overlap_x
+            a.x += push
+            a.vx *= -0.38
+            b.vx *= 0.86
+            impulse = abs(a.vx) * a.mass
+            b.hp -= impulse * 0.25
         else:
-            self.player.on_ground = False
-            self.player.y = ny
+            push = overlap_y if dy > 0 else -overlap_y
+            a.y += push
+            if dy > 0:
+                a.vy = max(0.0, a.vy * -0.28)
+            else:
+                a.vy = min(0.0, a.vy * -0.28)
+            impulse = abs(a.vy) * a.mass
+            b.hp -= impulse * 0.20
 
-        if self.player.y < 2:
-            self.player.y = 20
-            self.player.vy = 0
+    def _update_body(self, body: Body, dt: float) -> None:
+        body.vy += GRAVITY * dt
+        body.x += body.vx * dt
+        body.y += body.vy * dt
 
-    def _draw_cube(self, x: int, y: int, z: int, block: int) -> None:
-        glBindTexture(GL_TEXTURE_2D, self.textures[block])
-        for face, verts in FACE_VERTS.items():
-            nx, ny, nz = FACE_NEIGHBOR[face]
-            if self.world.get((x + nx, y + ny, z + nz)) != BLOCK_AIR:
-                continue
+        if body.y + body.h / 2 >= GROUND_Y:
+            body.y = GROUND_Y - body.h / 2
+            body.vy *= -0.30
+            body.vx *= 0.97
 
-            glNormal3f(*FACE_NORMALS[face])
-            glBegin(GL_QUADS)
-            uv = ((0, 0), (1, 0), (1, 1), (0, 1))
-            for (vx, vy, vz), (u, v) in zip(verts, uv):
-                glTexCoord2f(u, v)
-                glVertex3f(x + vx, y + vy, z + vz)
-            glEnd()
+        body.vx *= 0.996
+        if abs(body.vx) < 0.05:
+            body.vx = 0.0
+        if abs(body.vy) < 0.05:
+            body.vy = 0.0
 
-    def _render_world(self) -> None:
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
+    def _launch_projectile(self) -> None:
+        if not self.projectile:
+            return
+        dx = SLING_X - self.projectile.x
+        dy = SLING_Y - self.projectile.y
+        power = math.hypot(dx, dy)
+        scale = 6.8
+        self.projectile.vx = dx * scale
+        self.projectile.vy = dy * scale
+        self.shot_fired = True
+        self.audio.launch.play()
 
-        glRotatef(self.player.pitch, 1, 0, 0)
-        glRotatef(self.player.yaw, 0, 1, 0)
-        glTranslatef(-self.player.x, -self.player.y - 1.6, -self.player.z)
+    def _draw_pixel_ground(self) -> None:
+        self.screen.fill((167, 213, 255))
+        pygame.draw.rect(self.screen, (86, 156, 88), (0, GROUND_Y, WIDTH, HEIGHT - GROUND_Y))
+        for x in range(0, WIDTH, 8):
+            noise = (x * 13) % 21
+            c = (76 + noise, 138 + noise // 2, 76)
+            pygame.draw.rect(self.screen, c, (x, GROUND_Y + 8, 8, HEIGHT - GROUND_Y))
 
-        px, py, pz = int(self.player.x), int(self.player.y), int(self.player.z)
-        radius = 24
-        for (x, y, z), block in self.world.blocks.items():
-            if block == BLOCK_AIR:
-                continue
-            if abs(x - px) > radius or abs(y - py) > radius or abs(z - pz) > radius:
-                continue
-            self._draw_cube(x, y, z, block)
+    def _draw_sling(self) -> None:
+        if not self.projectile:
+            return
+        px, py = int(self.projectile.x), int(self.projectile.y)
+        pygame.draw.line(self.screen, (92, 58, 40), (SLING_X - 18, SLING_Y + 55), (SLING_X - 5, SLING_Y - 40), 10)
+        pygame.draw.line(self.screen, (92, 58, 40), (SLING_X + 18, SLING_Y + 55), (SLING_X + 5, SLING_Y - 40), 10)
+        pygame.draw.line(self.screen, (40, 30, 26), (SLING_X - 10, SLING_Y - 15), (px, py), 4)
+        pygame.draw.line(self.screen, (40, 30, 26), (SLING_X + 10, SLING_Y - 15), (px, py), 4)
 
-    def _draw_crosshair_and_hud(self) -> None:
-        screen = pygame.display.get_surface()
-        w, h = screen.get_size()
+    def _draw_body(self, body: Body) -> None:
+        r = body.rect
+        color = body.color
+        if body.is_target:
+            pygame.draw.ellipse(self.screen, color, r)
+            pygame.draw.ellipse(self.screen, (255, 255, 255), (r.x + 9, r.y + 9, 6, 6))
+            pygame.draw.circle(self.screen, (0, 0, 0), (r.x + 13, r.y + 12), 2)
+        else:
+            pygame.draw.rect(self.screen, color, r, border_radius=3)
+            # pixel pattern
+            for y in range(r.top + 2, r.bottom, 6):
+                pygame.draw.line(self.screen, (160, 122, 78), (r.left + 2, y), (r.right - 2, y), 1)
 
-        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.line(overlay, (255, 255, 255, 190), (w // 2 - 10, h // 2), (w // 2 + 10, h // 2), 2)
-        pygame.draw.line(overlay, (255, 255, 255, 190), (w // 2, h // 2 - 10), (w // 2, h // 2 + 10), 2)
+    def _handle_input(self) -> None:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                self.running = False
+            elif ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    self.running = False
+                elif ev.key == pygame.K_r:
+                    self.reset_level()
+                elif ev.key == pygame.K_n and not self.targets:
+                    self.level_idx = (self.level_idx + 1) % len(self.levels)
+                    self.reset_level()
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                if self.projectile and self.projectile.rect.collidepoint(ev.pos) and not self.shot_fired:
+                    self.dragging = True
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                if self.dragging:
+                    self.dragging = False
+                    self._launch_projectile()
 
-        text = f"BLOCK: {self.selected_block} | POS: ({self.player.x:.1f}, {self.player.y:.1f}, {self.player.z:.1f})"
-        label = self.font.render(text, True, (236, 236, 236))
-        overlay.blit(label, (14, h - 34))
+        if self.dragging and self.projectile:
+            mx, my = pygame.mouse.get_pos()
+            dx = mx - SLING_X
+            dy = my - SLING_Y
+            d = math.hypot(dx, dy)
+            if d > self.max_pull:
+                scale = self.max_pull / d
+                dx *= scale
+                dy *= scale
+            self.projectile.x = SLING_X + dx
+            self.projectile.y = SLING_Y + dy
 
-        glDisable(GL_DEPTH_TEST)
-        data = pygame.image.tostring(overlay, "RGBA", True)
-        glRasterPos2f(-1, -1)
-        glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, data)
-        glEnable(GL_DEPTH_TEST)
+    def _simulate(self, dt: float) -> None:
+        if self.projectile:
+            self._update_body(self.projectile, dt)
+            self.trail.append((self.projectile.x, self.projectile.y))
+            if len(self.trail) > 35:
+                self.trail.pop(0)
+
+            for b in self.blocks + self.targets:
+                self._aabb_resolve(self.projectile, b)
+
+            if abs(self.projectile.vx) + abs(self.projectile.vy) > 40:
+                for t in self.targets:
+                    if self.projectile.rect.colliderect(t.rect):
+                        t.hp -= 45
+                        self.audio.hit.play()
+
+        for body in self.blocks + self.targets:
+            self._update_body(body, dt)
+
+        # stacked collisions for structures
+        solids = self.blocks + self.targets
+        for i in range(len(solids)):
+            for j in range(i + 1, len(solids)):
+                a, b = solids[i], solids[j]
+                if a.rect.colliderect(b.rect):
+                    if a.y < b.y:
+                        a.y -= 1.2
+                        b.y += 1.2
+                    else:
+                        a.y += 1.2
+                        b.y -= 1.2
+                    a.vy *= 0.8
+                    b.vy *= 0.8
+
+        before = len(self.blocks) + len(self.targets)
+        self.blocks = [b for b in self.blocks if b.hp > 0 and b.y < HEIGHT + 120]
+        self.targets = [t for t in self.targets if t.hp > 0 and t.y < HEIGHT + 120]
+        after = len(self.blocks) + len(self.targets)
+        if after < before:
+            self.audio.breaking.play()
+
+        if self.projectile and (self.projectile.x > WIDTH + 120 or self.projectile.y > HEIGHT + 120):
+            self.projectile = None
+
+        if self.shot_fired and not self.projectile:
+            self.projectile = self._spawn_projectile()
+            self.shot_fired = False
+            self.trail.clear()
+
+    def _render(self) -> None:
+        self._draw_pixel_ground()
+
+        for i, (x, y) in enumerate(self.trail):
+            alpha = int(255 * (i + 1) / len(self.trail))
+            surf = pygame.Surface((8, 8), pygame.SRCALPHA)
+            pygame.draw.circle(surf, (250, 250, 250, alpha // 2), (4, 4), 3)
+            self.screen.blit(surf, (x - 4, y - 4))
+
+        for b in self.blocks:
+            self._draw_body(b)
+        for t in self.targets:
+            self._draw_body(t)
+
+        self._draw_sling()
+        if self.projectile:
+            pygame.draw.circle(self.screen, self.projectile.color, (int(self.projectile.x), int(self.projectile.y)), 18)
+            pygame.draw.circle(self.screen, (255, 230, 220), (int(self.projectile.x - 6), int(self.projectile.y - 5)), 4)
+
+        panel = pygame.Surface((WIDTH, 56), pygame.SRCALPHA)
+        panel.fill((0, 0, 0, 120))
+        self.screen.blit(panel, (0, 0))
+
+        info = f"Level {self.level_idx + 1}/{len(self.levels)}   Targets left: {len(self.targets)}   [R] Restart"
+        self.screen.blit(self.font.render(info, True, (255, 255, 255)), (16, 16))
+
+        if not self.targets:
+            self.screen.blit(self.big.render("LEVEL CLEARED!", True, (255, 240, 120)), (WIDTH // 2 - 215, 80))
+            self.screen.blit(self.font.render("Press N for next level", True, (255, 255, 255)), (WIDTH // 2 - 128, 142))
+
+        pygame.display.flip()
 
     def run(self) -> None:
+        won_last_state = False
         while self.running:
-            dt = self.clock.tick(60) / 1000.0
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        self.running = False
-                    elif event.key == pygame.K_SPACE and self.player.on_ground:
-                        self.player.vy = 8.5
-                    elif pygame.K_1 <= event.key <= pygame.K_7:
-                        self.selected_block = (event.key - pygame.K_0)
-                elif event.type == pygame.MOUSEMOTION:
-                    dx, dy = event.rel
-                    self.player.yaw += dx * 0.14
-                    self.player.pitch = max(-89, min(89, self.player.pitch + dy * 0.14))
-                elif event.type == pygame.MOUSEBUTTONDOWN:
-                    block, target_air = self._raycast_block()
-                    if event.button == 1 and block is not None:
-                        self.world.set(block, BLOCK_AIR)
-                        self.sfx.break_sound.play()
-                    elif event.button == 3 and target_air is not None:
-                        self.world.set(target_air, self.selected_block)
-                        self.sfx.place_sound.play()
+            dt = self.clock.tick(FPS) / 1000.0
+            self._handle_input()
+            self._simulate(dt)
+            self._render()
 
-            self._move(dt, pygame.key.get_pressed())
-            self._render_world()
-            self._draw_crosshair_and_hud()
-            pygame.display.flip()
+            won_now = not self.targets
+            if won_now and not won_last_state:
+                self.audio.win.play()
+            won_last_state = won_now
 
         pygame.quit()
 
