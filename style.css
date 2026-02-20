@@ -1,0 +1,68 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1015;
+  --panel: #151a28;
+  --accent: #53d9a5;
+  --text: #f2f4ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #1d2233 0%, var(--bg) 55%);
+  color: var(--text);
+  font: 16px/1.4 "Segoe UI", system-ui, sans-serif;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(250px, 360px) minmax(500px, 960px);
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.hud {
+  background: linear-gradient(180deg, #1a2133, var(--panel));
+  border: 1px solid #25304c;
+  border-radius: 14px;
+  padding: 1rem 1.2rem;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
+}
+
+.hud h1 {
+  margin-top: 0;
+  margin-bottom: 0.3rem;
+  color: var(--accent);
+}
+
+.hud ul {
+  padding-left: 1.2rem;
+}
+
+#status {
+  margin-top: 1rem;
+  padding: 0.6rem;
+  border-radius: 8px;
+  background: #101728;
+  border: 1px solid #26314f;
+}
+
+canvas {
+  width: 100%;
+  max-width: 960px;
+  border-radius: 14px;
+  border: 1px solid #2a3250;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 45%);
+  cursor: crosshair;
+}
+
+@media (max-width: 1050px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

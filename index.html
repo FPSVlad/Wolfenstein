@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WolvenStorm 3D — фан-игра</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hud">
+        <h1>WolvenStorm 3D</h1>
+        <p>Фан-проект в духе классических рейкастер-шутеров.</p>
+        <ul>
+          <li><b>W/A/S/D</b> — движение</li>
+          <li><b>← / →</b> — поворот</li>
+          <li><b>Shift</b> — бег</li>
+          <li><b>Пробел</b> — выстрел</li>
+          <li><b>M</b> — миникарта</li>
+        </ul>
+        <p id="status">Нажми на поле игры, чтобы начать.</p>
+      </section>
+      <canvas id="game" width="960" height="540" aria-label="Игровой экран"></canvas>
+    </main>
+    <script src="game.js"></script>
+  </body>
+</html>
