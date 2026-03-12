@@ -202,7 +202,7 @@ class Lexer:
             if not line:
                 continue
             ch1 = line[0]
-            if ch1 in ("C", "c", "*"):
+            if ch1 in ("C", "c", "*", "!"):
                 continue
             if len(line) < 6:
                 line += " " * (6 - len(line))
@@ -212,18 +212,21 @@ class Lexer:
             label = label_field.strip() if label_field.strip() else None
             if label is not None and not label.isdigit():
                 raise FortranError("Invalid numeric label", ln, 1)
+
+            code_stripped = code.strip()
             if cont.strip():
                 if pending is None:
                     raise FortranError("Continuation line without previous statement", ln, 6)
-                pending += " " + code.strip()
+                pending += " " + code_stripped
             else:
-                if pending is not None:
+                if pending is not None and pending.strip():
                     logical_lines.append((pending_line, pending))
-                pending = code.strip()
+                pending = code_stripped
                 pending_line = ln
                 if label:
                     pending = f"__LABEL__{label} " + pending
-        if pending is not None:
+
+        if pending is not None and pending.strip():
             logical_lines.append((pending_line, pending))
         return logical_lines
 
@@ -413,6 +416,8 @@ class Parser:
         else:
             label = None
         up = text.upper().strip()
+        if not up:
+            return {"type": "Empty", "line": line, "label": label}
 
         if up.startswith("INTEGER ") or up.startswith("REAL ") or up.startswith("LOGICAL ") or up.startswith("DOUBLE PRECISION ") or up.startswith("COMPLEX ") or up.startswith("CHARACTER"):
             return self._parse_decl(up, line, label)
@@ -680,7 +685,9 @@ class Interpreter:
         while ip < len(body):
             st = body[ip]
             t = st["type"]
-            if t == "Declaration":
+            if t == "Empty":
+                pass
+            elif t == "Declaration":
                 self._exec_decl(st, table)
             elif t == "ArrayDecl":
                 self._exec_array_decl(st, table)
