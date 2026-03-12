@@ -496,7 +496,7 @@ class Parser:
         if not up.startswith("IF"):
             raise FortranError("Malformed IF", line, 1)
         l = text.index("(")
-        r = text.rindex(")")
+        r = self._find_matching_paren(text, l)
         cond = text[l + 1:r].strip()
         tail = text[r + 1:].strip()
         if tail.count(",") == 2 and all(p.strip().isdigit() for p in tail.split(",")):
@@ -507,7 +507,7 @@ class Parser:
 
     def _parse_if_block(self, text, line, label):
         l = text.index("(")
-        r = text.rindex(")")
+        r = self._find_matching_paren(text, l)
         cond = text[l + 1:r].strip()
         self.i += 1
         then_body, else_body = [], []
@@ -519,6 +519,11 @@ class Parser:
                 active = else_body
                 self.i += 1
                 continue
+            # Fortran extension style: ELSE IF (...) THEN
+            if up.startswith("ELSE IF") and up.endswith("THEN"):
+                nested = self._parse_if_block(t[5:].strip(), ln, None)
+                else_body.append(nested)
+                break
             if up in ("ENDIF", "END IF"):
                 break
             active.append(self._parse_stmt(t, ln))
@@ -537,9 +542,27 @@ class Parser:
         step = exprs[2] if len(exprs) > 2 else "1"
         return {"type": "DoLoop", "line": line, "label": label, "end_label": end_label, "var": var, "start": start, "stop": stop, "step": step}
 
+    def _find_matching_paren(self, text, lpos):
+        depth = 0
+        in_str = False
+        i = lpos
+        while i < len(text):
+            c = text[i]
+            if c == "'":
+                in_str = not in_str
+            elif not in_str:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            i += 1
+        raise FortranError("Unmatched parenthesis in statement")
+
     def _parse_io(self, kind, text, line, label):
         l = text.index("(")
-        r = text.rindex(")")
+        r = self._find_matching_paren(text, l)
         ctl = self._split_csv(text[l + 1:r])
         unit = ctl[0].strip() if ctl else "*"
         fmt = ctl[1].strip() if len(ctl) > 1 else "*"
@@ -551,8 +574,10 @@ class Parser:
         t = tail.strip()
         if "(" not in t:
             return t.upper(), []
-        name = t[:t.index("(")].strip().upper()
-        args = t[t.index("(") + 1:t.rindex(")")]
+        lp = t.index("(")
+        rp = self._find_matching_paren(t, lp)
+        name = t[:lp].strip().upper()
+        args = t[lp + 1:rp]
         return name, self._split_csv(args)
 
 
